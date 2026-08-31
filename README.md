@@ -57,6 +57,13 @@ than computed globally (see §6).
   and never touches the real dataset. The dashboard shows an unmistakable banner whenever that
   file is loaded.
 
+  **Scope note:** the two-tier detector and this fault-injection script go beyond the original
+  brief's literal ask (a single anomaly flag, z-score or IQR). They were added deliberately, in a
+  prior planning session, specifically because a more sophisticated detector creates a problem
+  the brief doesn't warn about — Tier 1 would sit empty in a live demo on Open-Meteo's clean
+  model output. Kept because it demonstrates the judgment the brief says it's grading, stays off
+  by default, and is unmistakably labeled synthetic — not because bigger is better.
+
 ## 4. Cleaning and normalisation decisions
 
 The brief asks to both "handle outliers" during cleaning and "flag anomalies" on the same data —

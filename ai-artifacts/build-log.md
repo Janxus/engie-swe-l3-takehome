@@ -201,3 +201,59 @@ sequencing rule, Part 2 (AI agent) starts next -- handed off to a fresh agent/se
 budget reasons; see `ai-artifacts/part2-handoff.md` for everything that session needs to pick up
 cleanly. Git identity is now resolved (see entry above); the actual `git init` + first commits
 happen immediately after this handoff doc is written.
+
+- **Housekeeping / diligence pass.** Added `Makefile` (`install`, `pipeline`, `inject-faults`,
+  `dev`, `test`) as the single local entry point -- `make dev` is the project's equivalent of
+  `npm run dev`: rebuilds the store only if it's missing, then serves the dashboard. Added
+  `tests/test_invariants.py`, an assert-based script (no new dependency) checking schema shape,
+  row-count symmetry across site/metric groups, unit consistency, `fence_lower <= fence_upper`,
+  and that every `is_anomaly` row carries both an `anomaly_tier` and an `anomaly_reason` -- the
+  kind of check that would catch a schema regression or a Tier-1 rule silently breaking, run via
+  `make test`. Re-verified the "runs from a clean clone" claim with a *real* `git clone` this
+  time (the earlier check, before git existed, used a manual rsync approximation) --
+  `git clone` -> `make install` -> `make test` -> `make dev` all passed against a scratch copy of
+  the actual committed history, HTTP 200 from the served dashboard.
+  Found and fixed two real gaps during this pass: (1) Streamlit's first-run onboarding prompt
+  asks for an email on stdin and would hang a reviewer's first `make dev` -- fixed via
+  `.streamlit/config.toml` (`server.showEmailPrompt = false`, `browser.gatherUsageStats = false`),
+  confirmed against the installed package's own `credentials.py` rather than guessing the right
+  config keys. (2) Two local-only artifacts weren't gitignored: `.claude/settings.local.json`
+  (session-specific tool permissions) and the `.agents/skills/` + `.claude/skills/` symlinks
+  Streamlit auto-installs on first run (point into `.venv`; Streamlit's own installer output
+  recommends not committing them). Both added to `.gitignore`.
+
+- **Fault-injection scope check against the original source PDF.** User supplied the original
+  ENGIE brief (`swe-l3-takehome_rev1.pdf`) and asked whether the fault-injection feature was
+  "mistakenly added." Compared directly: the original PDF's entire Part 1 anomaly requirement is
+  one line -- "An anomaly flag on the data (z-score or IQR -- pick one and briefly justify your
+  choice in the README)." No mention of tiers, physical-validity rules, or synthetic/fault data
+  anywhere in the 3-page source document. The two-tier detector and the fault-injection script
+  are both elaborations from the *derived build spec*, which the build spec's own header
+  attributes to the candidate's own prior planning session, not to ENGIE. Conclusion: not a
+  mistake or a hallucinated requirement -- a deliberate, labeled scope addition, made necessary by
+  the candidate's own choice to build a more sophisticated detector than the brief strictly asked
+  for (Open-Meteo being clean model output means Tier 1 would sit empty in a live demo without it).
+  **Decision: keep it, as built.** Rationale: it maps directly to the original brief's own stated
+  grading criteria ("how you make decisions under ambiguity, and how you communicate those
+  decisions") rather than being decorative -- it demonstrates a real capability (the Tier-1
+  detector genuinely fires, verified against synthetic faults) rather than adding cosmetic
+  polish, which keeps it consistent with the brief's separate "no need to over-polish" line. It
+  also already satisfies every constraint the original PDF's spirit would impose even without the
+  build spec spelling it out: off by default, opt-in only, unmistakably labeled synthetic
+  (`st.error` red banner naming the exact file and script) -- so a reviewer cloning the repo never
+  sees or could mistake it for real data unless they deliberately opt in. Named tradeoff, not
+  hidden: it's extra surface area to explain in a time-boxed 15-minute walkthrough, so the
+  walkthrough should lead with "off by default, clearly labeled" rather than assume the reviewer
+  reads the README section unprompted.
+
+## Part 1: signed off
+
+All Part 1 Definition-of-Done items (build spec §8) are built, verified, and committed:
+pipeline (3 sites x 2 metrics x 720h = 4320 rows), anomaly flags/tiers/reasons/fences persisted
+as columns, dashboard with tier-distinguished flags and shaded IQR band, README §§1-7/9-11,
+verified clean-clone run via a real `git clone`. The one remaining item from spec §0 --
+creating/pushing the GitHub remote and granting access to `bongvaldozjr@gmail.com` -- is a
+submission-level action, not a Part-1-gate item (the spec's hard sequencing rule only requires
+Part 1 to be committed locally before Part 2 starts), and stays deferred per the user's earlier
+explicit instruction until they're ready to do it. Part 2 continues in a separate agent/session;
+see `part2-handoff.md`.

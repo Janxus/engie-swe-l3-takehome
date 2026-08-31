@@ -67,3 +67,85 @@ later" for *local* commits specifically — flagged back to the user in-session 
 still need a real author identity, which #5 raised but never got a concrete answer for (personal
 email still not provided as of this entry). Proceeding with local git init once an identity is
 given; GitHub remote/push still deferred per #6 until the personal account is set up.
+
+### 8. Part 1 gate reached — commit-boundary question raised, user opts to set up personal GitHub live
+Agent flagged that the spec's own hard gate wants a *committed* Part 1 before Part 2 starts, and
+asked (AskUserQuestion) how to proceed given git was still deferred. User's reply:
+> before I answer that, can I gh-login then open to the chrome window where my personal git is
+> logged in and configure from that?
+
+Agent ran `gh auth login --web` (device code flow); user authorized in browser; account
+authenticated as **`Janxus`**. Agent then asked (AskUserQuestion) to confirm Janxus + get a
+commit name/email; user confirmed Janxus, then separately provided:
+> name: Aldjan W Mararac
+> email: aldjanw.mararac@gmail.com
+
+### 9. Isolation requirement for the gh/GitHub config
+> make sure that this gh config is only for this project and will not be used on other projects.
+
+Resolved by restoring `technology-dev` as the global `gh` active account and giving *this repo
+only* a `git config --local credential.https://github.com.helper` that resolves to
+`gh auth token --user Janxus` regardless of the global active account. Full reasoning in
+`build-log.md`'s "Git/GitHub identity resolution" entry.
+
+### 10. Part 2 handoff requirement, before git commands proceed
+> before we proceed on part 2, make sure build-log is updated. and generate a new md file that a
+> new agent will pickup on to work on part 2. Part 2 will be handled by another agent for token
+> maximizing. In that part 2 md file you will write tell all the relevant commands it needs to
+> know such as but not limited to: recording of prompt and logging to build, the decision branches
+> we took. proceed on git commands you're intended to do
+
+Produced `ai-artifacts/part2-handoff.md`, then proceeded with `git init` + the local identity/
+credential-helper config + 6 feature-scoped commits covering the whole Part 1 build.
+
+### 11. Move build spec into ai-artifacts/
+> move the ENGIE_Takehome_Build_Spec.md from root to ai-artifacts/ as it's only fitting for that
+> file to be in there then commit it too.
+
+### 12. Housekeeping request: local run command + spec-compliance diligence pass
+> housekeeping time. I want to make sure we are 100% compliance on part 1 that we have delivered
+> it. I need you to add a command where I can test it locally ie. like "npm run dev" on a node
+> project do a similar command here so I can see the output of part 1. do a diligence check if we
+> have followed everything part 1, refer to the build spec once more (the file we just moved to
+> ai-artifacts folder.
+
+Produced the `Makefile` (`make install/pipeline/inject-faults/dev/test`) and
+`tests/test_invariants.py`; the diligence pass itself surfaced and fixed two real gaps
+(Streamlit's first-run email prompt blocking non-interactively, and two local-only artifacts —
+`.claude/settings.local.json` and Streamlit's auto-installed skill symlinks — that weren't yet
+gitignored). See `build-log.md` for the full findings.
+
+### 13. Cross-check against the original source PDF
+User asked the dashboard's fault-injection banner be checked against the *original* ENGIE PDF
+brief (`swe-l3-takehome_rev1.pdf`), not just the derived build spec, then supplied the PDF after
+an initial attachment that didn't come through:
+> ...so that fault-injection was mistakenly added? here's the attached file that was referred
+> earlier
+
+Agent compared the two documents directly: the original PDF's Part 1 anomaly requirement is a
+single line ("An anomaly flag on the data (z-score or IQR — pick one and briefly justify your
+choice in the README)") with no mention of tiers or fault injection anywhere. The two-tier system
+and the fault-injection script are elaborations the user made in their own prior planning session
+that produced the build spec (the build spec's own header names "Aldjan W. Mararac (candidate)"
+as the author of those decisions) — not something ENGIE asked for, but also not a hallucinated or
+mistaken addition; both are traceable to a real problem the user's own more sophisticated design
+created (Open-Meteo being clean model data would leave Tier 1 empty in a live demo).
+
+### 14. Strategic question: does this elaboration help in the interview?
+> How will adding that feature help me in my case when I present this project to them in line with
+> the project requirement that they sent?
+
+Agent's recommendation: yes — it maps directly to the brief's own stated grading criteria
+("how you make decisions under ambiguity, and how you communicate those decisions"), giving a
+concrete demonstration of judgment rather than just a checkbox anomaly flag. Tradeoff: extra
+surface area to explain in a 15-minute walkthrough; needs a ready one-line answer for "why does
+this exist" rather than relying on the reviewer finding it in the README unprompted.
+
+### 15. Decision: keep the feature, document it, sign off Part 1
+> I actually like how it was clearly indicated that those are just Synthetic Data. I think there's
+> no harm of putting it in there. Document this. Then, we can now sign off Part 1?
+
+Decision: fault-injection script and its clearly-labeled synthetic-data banner are KEPT as-is.
+Rationale recorded in `build-log.md`. Part 1 signed off as of this entry, pending only the
+already-deferred GitHub hosting/access-grant step (§0 of the spec), which is a submission-level
+item, not a Part-1-gate item.
