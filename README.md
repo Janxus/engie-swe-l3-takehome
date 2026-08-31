@@ -208,9 +208,9 @@ agent in Part 2 surfaces it directly to the user rather than recomputing anythin
 ## 11. AI usage
 
 This project was built with Claude Code (Opus 5, then Sonnet 5) against a build spec
-(`ENGIE_Takehome_Build_Spec.md`) authored by the candidate in a prior planning session. All
-prompts, redirections, and the resulting build decisions — including the ones that override or
-add detail beyond what the spec assumed — are recorded verbatim in `/ai-artifacts/`:
+(`ai-artifacts/ENGIE_Takehome_Build_Spec.md`) authored by the candidate in a prior planning
+session. All prompts, redirections, and the resulting build decisions — including the ones that
+override or add detail beyond what the spec assumed — are recorded verbatim in `/ai-artifacts/`:
 
 - `ENGIE_Takehome_Build_Spec.md` — the settled design brief this session executed against.
 - `prompts.md` — every instruction and redirection given during the build session, verbatim.
