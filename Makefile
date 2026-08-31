@@ -23,3 +23,4 @@ dev:
 
 test:
 	$(PY) tests/test_invariants.py
+	$(PY) tests/test_tools.py
