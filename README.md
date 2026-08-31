@@ -11,14 +11,14 @@ sites from Open-Meteo, cleans it, flags anomalies with a two-tier detector, and 
 Streamlit dashboard.
 
 ```bash
-python3.14 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python src/pipeline.py          # fetch -> clean -> anomaly -> data/openmeteo.duckdb
-streamlit run app.py
+make install   # venv + pinned deps
+make dev       # rebuilds the store if needed, then serves the dashboard
 ```
 
-A raw-data snapshot is committed under `data/raw/`, so `pipeline.py` rebuilds the store offline —
-no API key or network access needed for a reviewer to see a working dashboard.
+A raw-data snapshot is committed under `data/raw/` and the built store is committed too, so
+`make dev` works offline — no API key or network access needed. `make pipeline` re-runs
+fetch → clean → anomaly → store by hand; `make test` runs a fast invariant check against the
+store; `make inject-faults` builds the fault-injection demo DB (§3, §6).
 
 ## 2. Site selection and why
 
