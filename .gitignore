@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/demo_faulty.duckdb
+.DS_Store
