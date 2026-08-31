@@ -1,14 +1,13 @@
 # ENGIE L3 Take-Home — Solar & Wind Dashboard
 
 > This README is a decision log, not a setup guide. It records what was built and why, in the
-> order a 15-minute walkthrough would cover it. Section 8 (AI agent) is added once Part 2 is
-> built — this file documents completed work only.
+> order a 15-minute walkthrough would cover it.
 
 ## 1. What this is / how to run it
 
 A pipeline that pulls 30 days of hourly solar radiation and wind speed for three contrasting
 sites from Open-Meteo, cleans it, flags anomalies with a two-tier detector, and serves it in a
-Streamlit dashboard.
+Streamlit dashboard with a second tab: a tool-calling AI agent over the same store (§8).
 
 ```bash
 make install   # venv + pinned deps
@@ -16,9 +15,11 @@ make dev       # rebuilds the store if needed, then serves the dashboard
 ```
 
 A raw-data snapshot is committed under `data/raw/` and the built store is committed too, so
-`make dev` works offline — no API key or network access needed. `make pipeline` re-runs
-fetch → clean → anomaly → store by hand; `make test` runs a fast invariant check against the
-store; `make inject-faults` builds the fault-injection demo DB (§3, §6).
+`make dev` works offline — no API key or network access needed for the dashboard tab. The AI
+tab works too, without a key, via its keyless fallback (§8); drop an `ANTHROPIC_API_KEY` in
+`.env` (see `.env.example`) for the live model path. `make pipeline` re-runs fetch → clean →
+anomaly → store by hand; `make test` runs invariant checks against the store; `make inject-faults`
+builds the fault-injection demo DB (§3, §6).
 
 ## 2. Site selection and why
 
@@ -177,6 +178,139 @@ agent in Part 2 surfaces it directly to the user rather than recomputing anythin
   handled by the Tier-1 delta/run-length rule; slow drift is acknowledged as not handled.
 - **Spatial** anomalies (one site diverging from neighbours under the same weather system) —
   out of scope here, and the highest-value next addition (§10).
+
+## 8. AI agent design
+
+### Architecture: tool calling, not text-to-SQL
+
+The model is constrained to intent classification and parameter extraction; all computation is
+deterministic. The answer set is therefore closed, and hallucination is structurally excluded
+rather than prompted against. `src/agent.py` runs a manual tool-use loop against
+`claude-sonnet-5` (the Anthropic Python SDK) over exactly 4 typed Python functions in
+`src/tools.py` — the model never writes a query, never touches a number, and every figure the
+user sees was produced by a `duckdb` query in this repo, not generated text.
+
+**Rejected: text-to-SQL.** Most failure-prone pattern on a small schema; requires a guard layer
+(read-only enforcement, injection defence, syntax retries, query timeouts); and fails
+*invisibly* — a subtly wrong `WHERE` clause returns plausible numbers that are simply not the
+answer.
+
+**Rejected: RAG over pre-computed summaries.** Adds a retrieval layer that can miss, and still
+cannot answer arithmetic questions reliably.
+
+### Tool surface — exactly 4
+
+| Function | Answers | Parameters |
+|---|---|---|
+| `get_site_ranking` | "Which site had the highest average solar radiation last week?" | metric, aggregation, date range, sort direction |
+| `get_anomalies` | "Were there anomalous wind readings at a site in the last 7 days?" | site, metric, date range |
+| `compare_sites` | "Compare generation potential across all three sites for the past month." | metric, date range, site list |
+| `get_summary_stats` | min/max/mean/count for one site, one metric, one window | site, metric, date range |
+
+`get_summary_stats` drops the aggregation choice and always returns all four statistics together
+— it's the catch-all stats lookup, and there's no reason to make the model pick one when the
+query computes all four for free.
+
+Every aggregate (`get_site_ranking`, `compare_sites`, `get_summary_stats`) excludes Tier-1-flagged
+rows — physically impossible readings must never enter a mean or min/max — but keeps Tier-2 rows,
+since those are real meteorological events (§6), not noise. `get_anomalies` is the one exception:
+it reads the persisted `is_anomaly`/`anomaly_tier`/`anomaly_reason` columns directly and never
+recomputes them, which is the actual payoff of §3/§6's storage decision — Parts 1 and 2 were
+designed as one system, not bolted together.
+
+**"Generation potential" is a documented proxy, not a power estimate.** Wind power scales with
+the cube of velocity, and solar output depends on a capacity/efficiency assumption neither raw
+metric captures alone — so `compare_sites` reports relative irradiance/wind-speed as a proxy for
+generation potential; a true estimate requires turbine power curves and panel capacity/efficiency
+data, which are out of scope here. This sentence is stated once in the tool's own response
+payload (so the model surfaces it verbatim, not paraphrased away) and once here.
+
+### Two rules that make this look deliberate
+
+1. **Date resolution is a deterministic tool, not a prompt instruction.** "Last week," "the past 7
+   days" resolve to one of a fixed enum (`last_7_days`/`last_14_days`/`last_30_days`/`all`), which
+   `src/dates.py` resolves against `MAX(timestamp)` in the store — never `datetime.now()`, never
+   left to the LLM. The model classifies phrasing onto the enum; it performs no date arithmetic at
+   all. An absolute-date question ("August 5 to August 10") falls through to the refusal path
+   below — a real limit, demonstrated rather than hidden.
+2. **`get_anomalies` reads the persisted flag columns, full stop.**
+
+### Refusal is a feature
+
+Every tool returns a structured result plus an explicit `no_data` signal — see the North Sea /
+wind transcript entry below, a real no-anomalies case in the live data, not a hypothetical. When
+no tool matches the question at all, the system prompt instructs the model to say so plainly
+rather than guess or force-fit a tool. See the last transcript entry.
+
+### Presentation and the keyless fallback
+
+Second tab in `app.py` (`st.tabs(["Dashboard", "AI Assistant"])`), same app, not a separate
+service. Preset buttons cover all 4 tools; free text is available alongside them. Every answer
+renders an expander with the resolved tool call (function name + parameters) beneath it — the
+grounding claim made visible, not just asserted.
+
+**Without a key**, the app doesn't degrade to broken: a banner explains the missing key, and the
+preset buttons are wired directly to the tools (`src/tools.py`'s `TOOL_DISPATCH`) with no model
+involved — a reviewer cloning this repo with no `ANTHROPIC_API_KEY` still sees the tools work,
+just without a model turning the result into a sentence. Free text is disabled in this mode, since
+parsing arbitrary phrasing genuinely needs the model.
+
+**A key being present doesn't mean it still works** — credit can run out mid-session. `app.py`'s
+`handle_question()` tries the live call first, and if it fails on a preset question (bad key,
+exhausted credit, rate limit, network), it falls back to the same direct-tool path used when
+there's no key at all, with a caption naming the failure instead of a repeated error. Verified by
+simulating a dead key end-to-end: the preset still returned the correct real numbers via the
+fallback path. Free text has no fixed tool mapping to fall back to, so it shows a plain error
+message rather than crashing.
+
+### Transcript (live, `claude-sonnet-5`, real API key)
+
+**Q: "Which site had the highest average solar radiation last week?"**
+Resolved tool call: `get_site_ranking(metric=solar_radiation, aggregation=mean, date_range=last_7_days, sort_direction=desc)`
+> Over the last 7 days (Aug 24–30, 2026), **Atacama Desert, CL** had the highest average solar
+> radiation at **266.55 W/m²**, followed by Luzon, PH (180.52 W/m²) and North Sea Coast, UK
+> (140.32 W/m²).
+
+**Q: "Were there anomalous wind readings at the North Sea Coast site in the last 7 days?"**
+Resolved tool call: `get_anomalies(site=northsea_uk, metric=wind_speed, date_range=last_7_days)`
+> No anomalous wind speed readings were flagged at the North Sea Coast, UK site over the last 7
+> days.
+
+This is `get_anomalies`' `no_data: true` path firing for real — North Sea/wind has zero anomalies
+in the live 30-day window (all its Tier-2 flags belong to solar and to wind at the other two
+sites). Nothing was hidden or suppressed to manufacture this example.
+
+**Q: "Compare generation potential across all three sites for the past month."**
+Raw model output *before* the tool call ran (distinct from the final answer below — shown here
+per the requirement to log raw output alongside a resolved call at least once):
+> I'll compare both solar radiation and wind speed across all three sites for the past 30 days,
+> since "generation potential" could apply to either solar or wind resources at each location.
+
+Resolved tool call: `compare_sites(metric=solar_radiation, date_range=last_30_days)` — the model
+called `compare_sites` twice in parallel (once per metric, its own initiative, not prompted) and
+synthesized both results into one answer:
+> **Solar Radiation (avg, W/m² proxy):** Atacama Desert 234.57, Luzon 181.07, North Sea Coast
+> 177.74 → Atacama Desert has the strongest solar generation potential by a clear margin.
+> **Wind Speed (avg, m/s proxy):** North Sea Coast 7.88, Luzon 7.71, Atacama Desert 3.28 → North
+> Sea Coast and Luzon show similar, much higher wind potential than Atacama Desert.
+> *Note: these figures are relative irradiance/wind-speed averages used as a proxy for generation
+> potential, not actual power output estimates.*
+
+This question also caught a real bug: the manual loop's first pass only executed one `tool_use`
+block per turn. The API's parallel-tool-use default means one turn can carry several — leaving the
+second unresolved gets the next request rejected with a 400. Fixed by executing every `tool_use`
+block in a turn and returning all `tool_result` blocks together in one message, per the API's own
+contract (`ai-artifacts/build-log.md` has the full account).
+
+**Q: "What's the min, max, mean and count of wind speed at the Atacama Desert site this week?"**
+Resolved tool call: `get_summary_stats(site=atacama_cl, metric=wind_speed, date_range=last_7_days)`
+> Min: 0.1 m/s · Max: 11.94 m/s · Mean: 3.17 m/s · Count: 168 readings
+
+**Q: "What will solar radiation be tomorrow?"** (out-of-scope, demonstrating the refusal path)
+Resolved tool call: none — no tool matches a forecast question.
+> I can't answer that — the tools I have only report historical/observed solar radiation and wind
+> speed data (summary stats, rankings, comparisons, and anomalies) for the three sites. None of
+> them provide forecasts, so I can't tell you what solar radiation will be tomorrow.
 
 ## 9. Known issues and limitations
 

@@ -246,6 +246,108 @@ happen immediately after this handoff doc is written.
   walkthrough should lead with "off by default, clearly labeled" rather than assume the reviewer
   reads the README section unprompted.
 
+## Part 2 — AI agent
+
+- **Session start / plan.** Picked up from `part2-handoff.md` in a fresh agent session. Explored
+  the real store before planning: `data/openmeteo.duckdb` has 4,320 rows, `MAX(timestamp) =
+  2026-08-30 23:00`, and — notably — **zero Tier-1 anomalies and zero nulls** in the real data,
+  only 51 Tier-2 flags (0 of them for North Sea/wind_speed, a ready no-data test case). Plan
+  written and approved via `AskUserQuestion` at three genuine forks:
+  - **Anomalous rows in aggregates**: exclude Tier-1 (`anomaly_tier IS DISTINCT FROM 1`), keep
+    Tier-2. Tier 1 is "certainly wrong" and must never enter a mean/min/max; Tier 2 is a real
+    meteorological event per README §6 and stays in. Applied uniformly across all 4 tools'
+    aggregate queries (`get_anomalies` itself is unaffected — it returns flagged rows directly,
+    not an aggregate).
+  - **Date-range parameter shape**: enum only (`last_7_days`/`last_14_days`/`last_30_days`/`all`),
+    no absolute-date parameter. The model classifies phrasing onto an enum, never emits or
+    computes a date itself; an absolute-date question falls to the refusal path, which is a fine
+    demonstration of the boundary holding rather than a gap.
+  - **API key funding**: user confirmed real Anthropic API credit (not just a Claude subscription)
+    was available, generated a key at console.anthropic.com, and dropped it in `.env` — unblocking
+    a real live-path demo instead of a keyless-only submission.
+  - Settled without asking (documented per the handoff's "state the decision and why" rule):
+    `get_summary_stats` drops the spec table's literal `aggregation` parameter and always returns
+    `{count, min, max, mean}` together — the spec's own "Answers" column says it answers all four
+    at once, and an unused/ignored parameter would be dead schema surface. `get_site_ranking` keeps
+    `aggregation` since ranking genuinely needs a sort key.
+
+- **`src/dates.py`.** Deterministic range resolver: `resolve_range(range_key, con)` reads
+  `MAX(timestamp)` (and `MIN` for `all`) from the store and computes `[end − (N−1) days at
+  midnight, end]`. Never touches `datetime.now()`. Self-check via `demo()`, asserting each key's
+  span length and that `all` matches the store's true min/max.
+
+- **`src/tools.py`.** The 4 tools (`get_site_ranking`, `get_anomalies`, `compare_sites`,
+  `get_summary_stats`) as plain functions over a `duckdb` connection, each returning a structured
+  dict with an explicit `no_data`/`message` signal (spec §5.4). `compare_sites` embeds the §5.2a
+  "documented proxy for generation potential" sentence directly in its response payload so the
+  model surfaces it verbatim rather than paraphrasing it away. `TOOL_SCHEMAS` (Anthropic tool
+  defs, `site`/`metric` as JSON-schema enums against `config.SITES`/`METRIC_*`) and
+  `PRESET_QUESTIONS` (5 canned NL questions each carrying a fixed `(tool, params)` for the keyless
+  path) live alongside. Verified against the real store: `get_site_ranking` ranks all 3 sites;
+  `get_anomalies` correctly hits the no-data path for North Sea/wind and correctly returns rows for
+  solar; `get_summary_stats` produces internally consistent min ≤ mean ≤ max.
+
+- **`tests/test_tools.py`** added (same assert-based style as `test_invariants.py`), wired into
+  `make test` as a second line in the `Makefile`.
+
+- **`src/agent.py`.** Manual tool-use loop (not the beta Tool Runner — matches the handoff's
+  "keep it simple, 4 fixed tools" call), stateless per question (`ponytail:` comment marking this
+  as a deliberate scope limit — no sample question in the brief is a follow-up). `has_api_key()`
+  gates the whole live path via `.env`/`python-dotenv`. SDK errors (auth, rate limit, connection,
+  other status errors) are caught and turned into a plain-language `error` field rather than
+  surfacing a stack trace to the Streamlit UI.
+
+  **Bug found and fixed during live verification**: the first pass only executed
+  `tool_use_blocks[0]` per turn. Parallel tool use is on by default in the API — asking to
+  "compare generation potential across all three sites" made the model call `compare_sites` twice
+  in one turn (once per metric, unprompted — a reasonable interpretation of "generation
+  potential" spanning both solar and wind). Only feeding back one `tool_result` left the other
+  `tool_use` id unresolved, which the API rejects on the next turn with a 400
+  (`tool_use ids were found without tool_result blocks`). Fixed by executing every `tool_use`
+  block in a turn and returning all `tool_result` blocks together in a single user message, per
+  the API's own parallel-tool-use contract. Re-verified live — the model's dual-metric answer now
+  correctly synthesizes both `compare_sites` calls into one response, proxy disclaimer included.
+
+- **Second tab in `app.py`.** Existing Part 1 body extracted unchanged into `render_dashboard_tab`;
+  new `render_agent_tab` added inside `st.tabs(["Dashboard", "AI Assistant"])`. Reuses the existing
+  sidebar `db_path` (real vs `demo_faulty.duckdb`) rather than adding a second data-source
+  selector, so the agent tab follows whichever dataset the dashboard tab is showing. Preset
+  buttons and free text both route through one `handle_question()`: with a key, both go through
+  `agent.ask()`; without one, presets resolve via their fixed `(tool, params)` mapping called
+  directly (no NL parsing, matching spec §5.5's "preset buttons still wired directly to the
+  tools"), and free text is disabled with an explanatory caption. Every answer renders an
+  expander with the resolved tool call (function name + parameters) beneath it, satisfying the
+  "grounding claim made visible" requirement.
+
+- **Live verification (real key, real spend).** All 4 preset questions plus the out-of-scope
+  refusal question ("what will solar radiation be tomorrow?") run against `claude-sonnet-5` with
+  the real key. All 4 tools resolved correctly with sensible resolved parameters; the refusal
+  question correctly produced no tool call and a plain-language "I can't answer that" response
+  naming the missing capability (forecasting) rather than guessing. Raw model text and the
+  resolved tool call for each were captured for the README §8 transcript.
+
+- **Fail-safe against losing the key/credit mid-session** (explicit user request, not in the
+  original spec). `has_api_key()` only proves the env var is *set* — it says nothing about whether
+  the account behind it still has funds. Without a fix, a key that goes bad mid-session (exhausted
+  credit, revoked, network issue) would just repeat an error on every question after that point.
+  Reused the already-built keyless direct-tool-call path as an automatic fallback:
+  `handle_question()` in `app.py` now tries the live call first when a key is present, and if it
+  errors on a *preset* question, falls back to calling that preset's fixed `(tool, params)`
+  directly — the exact mechanism used when there's no key at all — with a caption naming the
+  failure reason instead of a silent retry. Free text has no fixed tool mapping to fall back to
+  (NL parsing genuinely needs the model), so it surfaces a plain error message rather than
+  crashing. Verified by simulating a dead key (`ANTHROPIC_API_KEY=sk-ant-invalid...`): the preset
+  path correctly caught the `AuthenticationError`, fell back, and returned the same correct real
+  data as the direct-tool test.
+
+- **Browser verification.** No project skill or browser-automation tool was pre-installed for this
+  repo; installed Playwright's Chromium build on demand (one-time, ~140MB) rather than reporting
+  the UI done from code-level checks alone. Screenshotted the Dashboard tab (unchanged from Part
+  1), the AI Assistant tab (keyless banner correctly absent since a real key is configured, preset
+  buttons + chat input both rendered), and the result of clicking a live preset button (natural-
+  language answer + a "Resolved tool call: `get_site_ranking`" expander beneath it, matching the
+  direct-SDK test's numbers exactly). Zero browser console errors.
+
 ## Part 1: signed off
 
 All Part 1 Definition-of-Done items (build spec §8) are built, verified, and committed:

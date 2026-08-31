@@ -149,3 +149,59 @@ Decision: fault-injection script and its clearly-labeled synthetic-data banner a
 Rationale recorded in `build-log.md`. Part 1 signed off as of this entry, pending only the
 already-deferred GitHub hosting/access-grant step (§0 of the spec), which is a submission-level
 item, not a Part-1-gate item.
+
+## Part 2
+
+Fresh agent session, picking up from `part2-handoff.md` per its own instructions. Fresh numbering.
+
+### 1. Initial task
+> let's kick off part 2. I need to see the step-by-step to do after we've formulated a plan on
+> delivering this. if you ever stumbled upon ambiguity, do not assume, raise and let us discuss.
+> /ponytail:ponytail
+
+### 2. Clarifying answers (AskUserQuestion round 1 — API key path, anomaly-row exclusion, date
+range shape)
+User picked "Exclude Tier 1, keep Tier 2" and "Enum only" directly, but answered the API-key
+question with two follow-up questions instead of picking an option:
+> 2 question regarding this. 1. How much do I have to top up for this demo?
+> 2. Say that I will use an existing openai api key, will I see in my open AI dashboard that that
+> openai key was used for this project?
+
+Agent answered inline (estimated cost ~$0.01/question, ~$0.50 total; explained an OpenAI key
+can't authenticate against `api.anthropic.com` regardless of dashboard visibility — different
+provider, would require rewriting the whole tool-calling layer against a different SDK, contradicting
+the spec's locked `claude-sonnet-5` decision) and re-asked the same fork with the pricing context
+attached.
+
+### 3. API key decision (AskUserQuestion round 2)
+> I remember having $29 balance I can use in my anthropic. I just need guidance on where to
+> generate the anthropic key
+
+Decision: top up/use the existing Anthropic credit and run the real live tool-calling path,
+rather than shipping keyless-only. Agent gave step-by-step console.anthropic.com key-generation
+instructions and proceeded to plan + build against that assumption.
+
+### 4. Mid-build check-in: platform credit balance
+> got back from platform.claude.com I see here I have $5 credit. is this enough?
+
+Agent confirmed $5 is well above the ~$0.50 estimated total spend and continued building.
+
+### 5. Key installed
+> alright created an .env with anthropic api key saved in it
+
+Triggered the plan's step 5→6 transition: live verification of all 4 preset questions plus the
+out-of-scope refusal question against the real API, which surfaced and fixed a real parallel-tool-use
+bug in `src/agent.py` (see `build-log.md`).
+
+### 6. Fail-safe requirement: survive lost credit/key mid-session
+> make sure what we are building here has a fail-safe feature where in if some way or another we
+> lost the anthropic api key credits this part 2 can still function. got it?
+
+`has_api_key()` only checks that the env var is *set*, not that the account still has funds — so a
+key that goes bad mid-session (credits exhausted, revoked, etc.) would otherwise just repeat an
+error on every question. Fixed `app.py`'s `handle_question()` so a failed *live* call on a preset
+question automatically falls back to calling the tool directly (the same code path already built
+for the fully-keyless case), instead of just showing a repeated error. Verified by simulating an
+invalid key end-to-end: the preset button still returned the correct real data via the fallback
+path, with a caption naming the failure reason. Free text still can't auto-recover (no model means
+no NL parsing), so it shows a plain error message instead of crashing.
